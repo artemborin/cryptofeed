@@ -261,7 +261,7 @@ class BinanceFutures(Binance, BinanceFuturesRestMixin):
             await self._ticker(msg, timestamp)
         elif msg_type == 'depthUpdate':
             await self._book(msg, pair, timestamp)
-        elif msg_type == 'aggTrade':
+        elif msg_type == 'trade':
             await self._trade(msg, timestamp)
         elif msg_type == 'forceOrder':
             await self._liquidations(msg, timestamp)

@@ -274,9 +274,9 @@ class Bybit(Feed):
                         sub = [f"{self.websocket_channels[CANDLES]}.{self.candle_interval_map[self.candle_interval]}.{pair}"]
                     elif self.exchange_channel_to_std(chan) == L2_BOOK:
                         l2_book_channel = {
-                            SPOT: "orderbook.200",
-                            FUTURES: "orderbook.200",
-                            PERPETUAL: "orderbook.200",
+                            SPOT: "orderbook.1000",
+                            FUTURES: "orderbook.1000",
+                            PERPETUAL: "orderbook.1000",
                         }
                         sub = [f"{l2_book_channel[sym.type]}.{pair}"]
                     else:
@@ -392,6 +392,7 @@ class Bybit(Feed):
 
                     price = Decimal(price)
                     size = Decimal(size)
+                    size = Decimal(0) if size == 0 else size
 
                     if size == 0:
                         if price in self._l2_book[pair].book[side]:

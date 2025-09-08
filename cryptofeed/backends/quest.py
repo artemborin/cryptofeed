@@ -8,6 +8,8 @@ import logging
 
 from cryptofeed.backends.backend import BackendCallback
 from cryptofeed.backends.socket import SocketCallback
+from cryptofeed.defines import ASK, BID
+from questdb.ingress import Sender, TimestampNanos, TimestampMicros
 
 
 LOG = logging.getLogger('feedhandler')
@@ -16,6 +18,7 @@ LOG = logging.getLogger('feedhandler')
 class QuestCallback(SocketCallback):
     def __init__(self, host='127.0.0.1', port=9009, key=None, **kwargs):
         super().__init__(f"tcp://{host}", port=port, **kwargs)
+        self.host = host
         self.key = key if key else self.default_key
         self.numeric_type = float
         self.none_to = None
@@ -23,10 +26,11 @@ class QuestCallback(SocketCallback):
 
     async def writer(self):
         while self.running:
-            await self.connect()
             async with self.read_queue() as updates:
-                update = "\n".join(updates) + "\n"
-                self.conn.write(update.encode())
+                conf = f'http::addr={self.host}:9001;'
+                with Sender.from_conf(conf) as sender:
+                    for update in updates:
+                        sender.row(update['table'], symbols=update['symbols'], columns=update['columns'], at=update['at'])
 
     async def write(self, data):
         d = self.format(data)
@@ -53,13 +57,18 @@ class TradeQuest(QuestCallback, BackendCallback):
 
     async def write(self, data):
         timestamp = data["timestamp"]
-        received_timestamp_int = int(data["receipt_timestamp"] * 1_000_000)
-        id_field = f'id={data["id"]}i,' if data["id"] is not None else ''
-        timestamp_int = int(timestamp * 1_000_000_000) if timestamp is not None else received_timestamp_int * 1000
-        update = (
-            f'{self.key}-{data["exchange"]},symbol={data["symbol"]},side={data["side"]},type={data["type"]} '
-            f'price={data["price"]},amount={data["amount"]},{id_field}receipt_timestamp={received_timestamp_int}t {timestamp_int}'
-        )
+        received_timestamp_int = int(data["receipt_timestamp"] * 1_000_000_000)
+        timestamp_int = int(timestamp * 1_000_000) if timestamp is not None else None
+        update = {
+            'table': self.key,
+            'symbols': {'exchange': data["exchange"], 'symbol': data["symbol"], 'side': data["side"], 'type': data["type"]},
+            'columns': {'price': float(data["price"]), 'amount': float(data["amount"])},
+            'at': TimestampNanos(received_timestamp_int)
+        }
+        if data["id"] is not None and data["id"].isdigit():
+            update['columns']['id'] = int(data["id"])
+        if timestamp_int is not None:
+            update['columns']['venue_timestamp'] = TimestampMicros(timestamp_int)
         await self.queue.put(update)
 
 
@@ -82,6 +91,65 @@ class BookQuest(QuestCallback):
         update = f'{self.key}-{book.exchange},symbol={book.symbol} {vals},receipt_timestamp={receipt_timestamp_int}t {timestamp_int}'
         await self.queue.put(update)
 
+class BookDeltaL2Quest(QuestCallback):
+    default_key = 'book'
+
+    def __init__(self, *args, depth=10, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.depth = depth
+
+    def get_string_from_delta(self,book, side, price, size, venue_timestamp_int, receipt_timestamp_int):
+        update = {
+            'table': self.key,
+            'symbols': {'exchange': book.exchange, 'symbol': book.symbol, 'side': side},
+            'columns': {'price': float(price), 'size': float(size)},
+            'at': TimestampNanos(receipt_timestamp_int)
+        }
+        if venue_timestamp_int is not None:
+            update['columns']['venue_timestamp'] = TimestampMicros(venue_timestamp_int)
+        return update
+        
+    async def __call__(self, book, receipt_timestamp: float):
+        timestamp = book.timestamp
+        receipt_timestamp_int = int(receipt_timestamp * 1_000_000_000)
+        timestamp_int = int(timestamp * 1_000_000) if timestamp is not None else None
+        updates = None
+        if book.delta:
+            updates = [self.get_string_from_delta(book, side, price, size, timestamp_int, receipt_timestamp_int) for side in (BID, ASK) for price, size in book.delta[side]]
+        else:
+            updates = [self.get_string_from_delta(book, side, price, size, timestamp_int, receipt_timestamp_int) for side in (BID, ASK) for price, size in book.book[side].to_dict().items()]
+        for update in updates:
+            await self.queue.put(update)
+
+class BookDeltaL3Quest(QuestCallback):
+    default_key = 'book'
+
+    def __init__(self, *args, depth=10, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.depth = depth
+
+    def get_string_from_delta(self,book, side, order_id, price, size, venue_timestamp_int, receipt_timestamp_int):
+        update = {
+            'table': self.key,
+            'symbols': {'exchange': book.exchange, 'symbol': book.symbol, 'side': side},
+            'columns': {'order_id': order_id, 'price': float(price), 'size': float(size)},
+            'at': TimestampNanos(receipt_timestamp_int)
+        }
+        if venue_timestamp_int is not None:
+            update['columns']['venue_timestamp'] = TimestampMicros(venue_timestamp_int)
+        return update
+        
+    async def __call__(self, book, receipt_timestamp: float):
+        timestamp = book.timestamp
+        receipt_timestamp_int = int(receipt_timestamp * 1_000_000_000)
+        timestamp_int = int(timestamp * 1_000_000) if timestamp is not None else None
+        updates = None
+        if book.delta:
+            updates = [self.get_string_from_delta(book, side, order_id, price, size, timestamp_int, receipt_timestamp_int) for side in (BID, ASK) for order_id, price, size in book.delta[side]]
+        else:
+            updates = [self.get_string_from_delta(book, side, order_id, price, size, timestamp_int, receipt_timestamp_int) for side in (BID, ASK) for price, d in book.book[side].to_dict().items() for order_id, size in d.items()]
+        for update in updates:
+            await self.queue.put(update)
 
 class TickerQuest(QuestCallback, BackendCallback):
     default_key = 'ticker'

@@ -1,5 +1,5 @@
 '''
-Copyright (C) 2017-2025 Bryant Moscon - bmoscon@gmail.com
+Copyright (C) 2017-2024 Bryant Moscon - bmoscon@gmail.com
 
 Please see the LICENSE file for the terms and conditions
 associated with this software.
@@ -265,8 +265,7 @@ class Bitfinex(Feed, BitfinexRestMixin):
             if len(self._l3_book[pair].book[side][price]) == 0:
                 del self._l3_book[pair].book[side][price]
 
-        delta = {BID: [], ASK: []}
-
+        delta = None
         if isinstance(msg[1][0], list):
             # snapshot so clear orders
             self.order_map[pair][BID] = {}
@@ -288,6 +287,7 @@ class Bitfinex(Feed, BitfinexRestMixin):
                 add_to_book(side, price, order_id, amount)
         else:
             # book update
+            delta = {BID: [], ASK: []}
             order_id, price, amount = msg[1]
             price = Decimal(price)
             amount = Decimal(amount)
@@ -299,10 +299,13 @@ class Bitfinex(Feed, BitfinexRestMixin):
                 amount = abs(amount)
 
             if price == 0:
-                price = self.order_map[pair][side][order_id]['price']
-                remove_from_book(side, order_id)
-                del self.order_map[pair][side][order_id]
-                delta[side].append((order_id, price, 0))
+                if order_id not in self.order_map[pair][side]:
+                    LOG.warning('%s: Order ID %s not found in order map for %s', self.id, order_id, pair)
+                else:
+                    price = self.order_map[pair][side][order_id]['price']
+                    remove_from_book(side, order_id)
+                    del self.order_map[pair][side][order_id]
+                    delta[side].append((order_id, price, 0))
             else:
                 if order_id in self.order_map[pair][side]:
                     del_price = self.order_map[pair][side][order_id]['price']
